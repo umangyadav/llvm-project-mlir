@@ -40,6 +40,7 @@
 #include "mlir/IR/BuiltinTypes.h"
 #include "mlir/IR/MLIRContext.h"
 #include "mlir/IR/PatternMatch.h"
+#include "mlir/IR/Visitors.h"
 #include "mlir/Pass/Pass.h"
 #include "mlir/Pass/PassManager.h"
 #include "mlir/Support/LLVM.h"
@@ -58,6 +59,18 @@
 
 using namespace mlir;
 
+static bool canBeCalledWithBarePointers(gpu::GPUFuncOp func) {
+  bool canBeBare = true;
+  for (Type type : func.getArgumentTypes()) {
+    if (auto memrefTy = type.dyn_cast<MemRefType>()) {
+      canBeBare &= memrefTy.hasStaticShape();
+      if (auto affineMap = memrefTy.getLayout().dyn_cast<AffineMapAttr>())
+        canBeBare &= affineMap.isIdentity();
+    }
+  }
+  return canBeBare;
+}
+
 namespace {
 
 /// Import the GPU Ops to ROCDL Patterns.
@@ -72,10 +85,16 @@ struct LowerGpuOpsToROCDLOpsPass
     : public ConvertGpuOpsToROCDLOpsBase<LowerGpuOpsToROCDLOpsPass> {
   LowerGpuOpsToROCDLOpsPass() = default;
   LowerGpuOpsToROCDLOpsPass(const std::string &chipset, unsigned indexBitwidth,
+                            bool useBarePtrCallConv,
                             gpu::amd::Runtime runtime) {
-    this->chipset = chipset;
-    this->indexBitwidth = indexBitwidth;
-    this->runtime = runtime;
+    if (this->chipset.getNumOccurrences() == 0)
+      this->chipset = chipset;
+    if (this->indexBitwidth.getNumOccurrences() == 0)
+      this->indexBitwidth = indexBitwidth;
+    if (this->useBarePtrCallConv.getNumOccurrences() == 0)
+      this->useBarePtrCallConv = useBarePtrCallConv;
+    if (this->runtime.getNumOccurrences() == 0)
+      this->runtime = runtime;
   }
 
   void runOnOperation() override {
@@ -99,7 +118,23 @@ struct LowerGpuOpsToROCDLOpsPass
         ctx, DataLayout(cast<DataLayoutOpInterface>(m.getOperation())));
     if (indexBitwidth != kDeriveIndexBitwidthFromDataLayout)
       options.overrideIndexBitwidth(indexBitwidth);
-    
+
+    if (useBarePtrCallConv) {
+      options.useBarePtrCallConv = true;
+      WalkResult canUseBarePointers =
+          m.walk([](gpu::GPUFuncOp func) -> WalkResult {
+            if (canBeCalledWithBarePointers(func))
+              return WalkResult::advance();
+            return WalkResult::interrupt();
+          });
+      if (canUseBarePointers.wasInterrupted()) {
+        emitError(UnknownLoc::get(ctx),
+                  "Bare pointer calling convention requires all memrefs to "
+                  "have static shape and use the identity map");
+        return signalPassFailure();
+      }
+    }
+
     LLVMTypeConverter converter(ctx, options);
 
     RewritePatternSet patterns(ctx);
@@ -258,7 +293,8 @@ void mlir::populateGpuToROCDLConversionPatterns(
 std::unique_ptr<OperationPass<gpu::GPUModuleOp>>
 mlir::createLowerGpuOpsToROCDLOpsPass(const std::string &chipset,
                                       unsigned indexBitwidth,
+                                      bool useBarePtrCallConv,
                                       gpu::amd::Runtime runtime) {
-  return std::make_unique<LowerGpuOpsToROCDLOpsPass>(chipset, indexBitwidth,
-                                                     runtime);
+  return std::make_unique<LowerGpuOpsToROCDLOpsPass>(
+      chipset, indexBitwidth, useBarePtrCallConv, runtime);
 }
