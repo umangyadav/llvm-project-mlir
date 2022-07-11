@@ -60,7 +60,8 @@ void xmir::buildRunnerPipeline(OpPassManager &pm,
     pm.addPass(createSymbolDCEPass());
   }
   pm.addNestedPass<func::FuncOp>(createConvertMathToLLVMPass());
-  pm.addPass(createGpuToLLVMConversionPass());
+  pm.addPass(createGpuToLLVMConversionPass(
+      /*kernelBarePtrCallConv=*/options.barePtrMemrefs));
   pm.addPass(createAsyncToAsyncRuntimePass());
   pm.addPass(createConvertAsyncToLLVMPass());
   pm.addPass(createConvertFuncToLLVMPass());
