@@ -503,10 +503,28 @@ void arith::ExtSIOp::inferResultRanges(ArrayRef<ConstantIntRanges> argRanges,
 static ConstantIntRanges truncIRange(const ConstantIntRanges &range,
                                      Type destType) {
   unsigned destWidth = ConstantIntRanges::getStorageBitwidth(destType);
-  APInt umin = range.umin().trunc(destWidth);
-  APInt umax = range.umax().trunc(destWidth);
-  APInt smin = range.smin().trunc(destWidth);
-  APInt smax = range.smax().trunc(destWidth);
+  // If you truncate the first four bytes in [0xaaaabbbb, 0xccccbbbb],
+  // the range of the resulting value is not contiguous ind includes 0.
+  bool hasUnsignedRollover =
+      range.umin().lshr(destWidth) != range.umax().lshr(destWidth);
+  APInt umin = hasUnsignedRollover ? APInt::getZero(destWidth)
+                                   : range.umin().trunc(destWidth);
+  APInt umax = hasUnsignedRollover ? APInt::getMaxValue(destWidth)
+                                   : range.umax().trunc(destWidth);
+
+  // Signed post-truncation rollover will not occur when either:
+  // - The high parts of the min and max are the same
+  // - The high halves of the min and max are either all 1s or all 0s
+  APInt sminHighPart = range.smin().ashr(destWidth);
+  APInt smaxHighPart = range.smax().ashr(destWidth);
+  bool hasSignedOverflow =
+      (sminHighPart != smaxHighPart) &&
+      !(sminHighPart.isAllOnes() || sminHighPart.isZero()) &&
+      !(smaxHighPart.isAllOnes() || smaxHighPart.isZero());
+  APInt smin = hasSignedOverflow ? APInt::getSignedMinValue(destWidth)
+                                 : range.smin().trunc(destWidth);
+  APInt smax = hasSignedOverflow ? APInt::getSignedMaxValue(destWidth)
+                                 : range.smax().trunc(destWidth);
   return {umin, umax, smin, smax};
 }
 

@@ -645,3 +645,69 @@ func.func @loop_bound_not_inferred_with_branch(%arg0 : index, %arg1 : i1) -> i1 
     func.return %8 : i1
 }
 
+// Test fon a bug where the noive implementation of trunctation led to the cast
+// value being set to [0, 0].
+// CHECK-LABEL: func.func @truncation_spillover
+// CHECK: %[[unreplaced:.*]] = arith.index_cast
+// CHECK: memref.store %[[unreplaced]]
+func.func @truncation_spillover(%arg0 : memref<?xi32>) -> index {
+    %c0 = arith.constant 0 : index
+    %c1 = arith.constant 1 : index
+    %c2 = arith.constant 2 : index
+    %c49 = arith.constant 49 : index
+    %0 = scf.for %arg1 = %c0 to %c2 step %c1 iter_args(%arg2 = %c0) -> index {
+        %1 = arith.divsi %arg2, %c49 : index
+        %2 = arith.index_cast %1 : index to i32
+        memref.store %2, %arg0[%c0] : memref<?xi32>
+        %3 = arith.addi %arg2, %arg1 : index
+        scf.yield %3 : index
+    }
+  func.return %0 : index
+}
+
+// CHECK-LABEL: func.func @trunc_catches_overflow
+// CHECK: %[[ult:.*]] = arith.cmpi ult
+// CHECK: return %[[ult]]
+func.func @trunc_catches_overflow(%arg0 : i16) -> i1 {
+    %c255_i16 = arith.constant 255 : i16
+    %c256_i16 = arith.constant 256 : i16
+    %c1_i8 = arith.constant 1 : i8
+    %0 = arith.maxui %arg0, %c255_i16 : i16
+    %1 = arith.minui %0, %c256_i16 : i16
+    %2 = arith.trunci %1 : i16 to i8
+    %3 = arith.cmpi slt, %2, %c1_i8 : i8
+    %4 = arith.cmpi ult, %2, %c1_i8 : i8
+    %5 = arith.andi %3, %4 : i1
+    func.return %5 : i1
+}
+
+// CHECK-LABEL: func.func @trunc_respects_same_high_half
+// CHECK: %[[false:.*]] = arith.constant false
+// CHECK: return %[[false]]
+func.func @trunc_respects_same_high_half(%arg0 : i16) -> i1 {
+    %c256_i16 = arith.constant 256 : i16
+    %c257_i16 = arith.constant 257 : i16
+    %c2_i8 = arith.constant 2 : i8
+    %0 = arith.maxui %arg0, %c256_i16 : i16
+    %1 = arith.minui %0, %c257_i16 : i16
+    %2 = arith.trunci %1 : i16 to i8
+    %3 = arith.cmpi sge, %2, %c2_i8 : i8
+    func.return %3 : i1
+}
+
+// CHECK-LABEL: func.func @trunc_handles_small_signed_ranges
+// CHECK: %[[true:.*]] = arith.constant true
+// CHECK: return %[[true]]
+func.func @trunc_handles_small_signed_ranges(%arg0 : i16) -> i1 {
+    %c-2_i16 = arith.constant -2 : i16
+    %c2_i16 = arith.constant 2 : i16
+    %c-2_i8 = arith.constant -2 : i8
+    %c2_i8 = arith.constant 2 : i8
+    %0 = arith.maxsi %arg0, %c-2_i16 : i16
+    %1 = arith.minsi %0, %c2_i16 : i16
+    %2 = arith.trunci %1 : i16 to i8
+    %3 = arith.cmpi sge, %2, %c-2_i8 : i8
+    %4 = arith.cmpi sle, %2, %c2_i8 : i8
+    %5 = arith.andi %3, %4 : i1
+    func.return %5 : i1
+}
